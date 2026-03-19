@@ -121,10 +121,18 @@ SYMBOLS = [
     "YYAPI.IS", "ZEDUR.IS", "ZOREN.IS", "ZRGYO.IS"
 ]
 
-# ================= RESAMPLE =================
-def resample_ohlc(df, tf):
-    ohlc = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
-    return df.resample(tf).apply(ohlc).dropna()
+# ================= VERİ ÇEK =================
+def get_data(symbol):
+    try:
+        df = yf.download(symbol, interval="1d", period="60d",
+                         auto_adjust=False, progress=False, timeout=30)
+        if df is None or df.empty or len(df) < 10:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        return df
+    except Exception:
+        return None
 
 # ================= PARA AKIŞI =================
 def money_flow(df):
@@ -137,27 +145,10 @@ def money_flow(df):
     except Exception:
         return None, None
 
-# ================= VERİ ÇEK =================
-def get_data(symbol):
-    try:
-        df = yf.download(symbol, interval="1h", period="60d",
-                         auto_adjust=False, progress=False, timeout=30)
-        if df is None or df.empty or len(df) < 50:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
-        df.index = pd.to_datetime(df.index)
-        return df
-    except Exception:
-        return None
-
 # ================= TARAMA =================
 def scan_market(scan_number=1):
-    giris_4h = set()
-    cikis_4h = set()
-    giris_1d = set()
-    cikis_1d = set()
-
+    giris = []
+    cikis = []
     toplam = len(SYMBOLS)
 
     print(f"\n{'='*50}", flush=True)
@@ -165,49 +156,28 @@ def scan_market(scan_number=1):
     print(f"{'='*50}", flush=True)
 
     for i, symbol in enumerate(SYMBOLS, 1):
-        if i % 25 == 1:
+        if i % 50 == 1:
             print(f"📈 [{i}/{toplam}] İşleniyor...", flush=True)
 
-        df1h = get_data(symbol)
-        if df1h is None:
+        df = get_data(symbol)
+        if df is None:
             continue
 
         ad = symbol.replace('.IS', '')
 
         try:
-            df4h = resample_ohlc(df1h, "4h")
-            g4h, c4h = money_flow(df4h)
-            if g4h is not None and len(g4h) > 0:
-                if bool(g4h.iloc[-1]):
-                    giris_4h.add(ad)
-                elif bool(c4h.iloc[-1]):
-                    cikis_4h.add(ad)
-
-            df1d = resample_ohlc(df1h, "1d")
-            g1d, c1d = money_flow(df1d)
-            if g1d is not None and len(g1d) > 0:
-                if bool(g1d.iloc[-1]):
-                    giris_1d.add(ad)
-                elif bool(c1d.iloc[-1]):
-                    cikis_1d.add(ad)
-
+            g, c = money_flow(df)
+            if g is not None and len(g) > 0:
+                if bool(g.iloc[-1]):
+                    giris.append(ad)
+                elif bool(c.iloc[-1]):
+                    cikis.append(ad)
         except Exception:
             continue
 
-        time.sleep(0.2)
+        time.sleep(0.1)
 
-    # ===== KESİŞİMLER (4H + 1D aynı anda) =====
-    cift_giris = sorted(giris_4h & giris_1d)   # her ikisinde de giriş
-    cift_cikis = sorted(cikis_4h & cikis_1d)   # her ikisinde de çıkış
-
-    # Sadece 4H veya sadece 1D
-    sadece_giris_4h = sorted(giris_4h - giris_1d)
-    sadece_cikis_4h = sorted(cikis_4h - cikis_1d)
-    sadece_giris_1d = sorted(giris_1d - giris_4h)
-    sadece_cikis_1d = sorted(cikis_1d - cikis_4h)
-
-    print(f"✅ Tamamlandı!", flush=True)
-    print(f"🔥 Çift Giriş: {len(cift_giris)} | Çift Çıkış: {len(cift_cikis)}", flush=True)
+    print(f"✅ Tamamlandı! 🟢 Giriş: {len(giris)} | 🔴 Çıkış: {len(cikis)}", flush=True)
 
     zaman = datetime.now().strftime('%d.%m.%Y %H:%M')
 
@@ -215,31 +185,18 @@ def scan_market(scan_number=1):
     send_telegram(
         f"💰 Para Akışı — #{scan_number}\n"
         f"🕒 {zaman}\n\n"
-        f"🔥 4H+1D Giriş: {len(cift_giris)}  |  4H+1D Çıkış: {len(cift_cikis)}\n"
-        f"⏱️ Sadece 4H → 🟢 {len(sadece_giris_4h)}  🔴 {len(sadece_cikis_4h)}\n"
-        f"📅 Sadece 1D → 🟢 {len(sadece_giris_1d)}  🔴 {len(sadece_cikis_1d)}"
+        f"🟢 Para Girişi: {len(giris)}\n"
+        f"🔴 Para Çıkışı: {len(cikis)}"
     )
     time.sleep(0.5)
 
-    # ===== 4H + 1D KESİŞİMLER (EN ÖNEMLİ) =====
-    if cift_giris:
-        send_parcali("🔥 4H+1D — 🟢 GÜÇLÜ GİRİŞ", cift_giris)
-    if cift_cikis:
-        send_parcali("🔥 4H+1D — 🔴 GÜÇLÜ ÇIKIŞ", cift_cikis)
+    if giris:
+        send_parcali("📅 🟢 PARA GİRİŞİ", sorted(giris))
 
-    # ===== SADECE 4H =====
-    if sadece_giris_4h:
-        send_parcali("⏱️ 4H — 🟢 GİRİŞ", sadece_giris_4h)
-    if sadece_cikis_4h:
-        send_parcali("⏱️ 4H — 🔴 ÇIKIŞ", sadece_cikis_4h)
+    if cikis:
+        send_parcali("📅 🔴 PARA ÇIKIŞI", sorted(cikis))
 
-    # ===== SADECE 1D =====
-    if sadece_giris_1d:
-        send_parcali("📅 1D — 🟢 GİRİŞ", sadece_giris_1d)
-    if sadece_cikis_1d:
-        send_parcali("📅 1D — 🔴 ÇIKIŞ", sadece_cikis_1d)
-
-    if not any([cift_giris, cift_cikis, sadece_giris_4h, sadece_cikis_4h, sadece_giris_1d, sadece_cikis_1d]):
+    if not giris and not cikis:
         send_telegram(f"ℹ️ Tarama #{scan_number} — Sinyal bulunamadı.\n🕒 {zaman}")
 
 
@@ -250,7 +207,8 @@ if __name__ == "__main__":
     send_telegram(
         f"🤖 Para Akışı Bot Aktif\n"
         f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        f"🔄 Her 2 saatte bir tarama yapılacak"
+        f"🔄 Her 2 saatte bir tarama yapılacak\n"
+        f"📅 Günlük (1D) sinyaller"
     )
 
     scan_count = 0
