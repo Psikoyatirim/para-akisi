@@ -6,7 +6,6 @@ import pandas as pd
 import requests
 import time
 import os
-import sys
 from datetime import datetime
 
 # ================= TELEGRAM =================
@@ -23,6 +22,20 @@ def send_telegram(msg):
             print(f"⚠️ Telegram HTTP hatası: {r.status_code}", flush=True)
     except Exception as e:
         print(f"⚠️ Telegram hatası: {e}", flush=True)
+
+def send_parcali(baslik, satirlar, parca_basina=30):
+    if not satirlar:
+        return
+    for i in range(0, len(satirlar), parca_basina):
+        parca = satirlar[i:i + parca_basina]
+        toplam_parca = (len(satirlar) + parca_basina - 1) // parca_basina
+        parca_no = (i // parca_basina) + 1
+        msg = baslik
+        if toplam_parca > 1:
+            msg += f" ({parca_no}/{toplam_parca})"
+        msg += "\n" + "\n".join(parca)
+        send_telegram(msg)
+        time.sleep(0.5)
 
 # ================= SEMBOLLER =================
 SYMBOLS = [
@@ -126,38 +139,35 @@ def money_flow(df):
     except Exception:
         return None, None
 
-# ================= TEK HİSSE VERİ ÇEK =================
+# ================= VERİ ÇEK =================
 def get_data(symbol):
     try:
-        df = yf.download(
-            symbol,
-            interval="1h",
-            period="60d",
-            auto_adjust=False,
-            progress=False,
-            timeout=30
-        )
+        df = yf.download(symbol, interval="1h", period="60d",
+                         auto_adjust=False, progress=False, timeout=30)
         if df is None or df.empty or len(df) < 50:
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
         df.index = pd.to_datetime(df.index)
         return df
-    except Exception as e:
-        print(f"  ❌ {symbol} veri hatası: {e}", flush=True)
+    except Exception:
         return None
 
 # ================= TARAMA =================
 def scan_market(scan_number=1):
-    signals_4h = []
-    signals_1d = []
+    # 4H
+    giris_4h = []
+    cikis_4h = []
+    # 1D
+    giris_1d = []
+    cikis_1d = []
+
     toplam = len(SYMBOLS)
     basarili = 0
     hatali = 0
 
     print(f"\n{'='*50}", flush=True)
     print(f"🔍 TARAMA #{scan_number} — {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}", flush=True)
-    print(f"📊 Toplam {toplam} hisse taranacak", flush=True)
     print(f"{'='*50}", flush=True)
 
     for i, symbol in enumerate(SYMBOLS, 1):
@@ -165,77 +175,83 @@ def scan_market(scan_number=1):
             print(f"📈 [{i}/{toplam}] İşleniyor...", flush=True)
 
         df1h = get_data(symbol)
-
         if df1h is None:
             hatali += 1
             continue
 
+        ad = symbol.replace('.IS', '')
+
         try:
-            # 4 SAATLİK
+            # 4H
             df4h = resample_ohlc(df1h, "4h")
-            giris4h, cikis4h = money_flow(df4h)
-
-            if giris4h is not None and len(giris4h) > 0:
-                if bool(giris4h.iloc[-1]):
-                    signals_4h.append(f"{symbol.replace('.IS','')} 🟢 Para Girişi")
+            g4h, c4h = money_flow(df4h)
+            if g4h is not None and len(g4h) > 0:
+                if bool(g4h.iloc[-1]):
+                    giris_4h.append(ad)
                     basarili += 1
                     continue
-                if bool(cikis4h.iloc[-1]):
-                    signals_4h.append(f"{symbol.replace('.IS','')} 🔴 Para Çıkışı")
+                if bool(c4h.iloc[-1]):
+                    cikis_4h.append(ad)
                     basarili += 1
                     continue
 
-            # GÜNLÜK
+            # 1D
             df1d = resample_ohlc(df1h, "1d")
-            giris1d, cikis1d = money_flow(df1d)
-
-            if giris1d is not None and len(giris1d) > 0:
-                if bool(giris1d.iloc[-1]):
-                    signals_1d.append(f"{symbol.replace('.IS','')} 🟢 Para Girişi")
-                elif bool(cikis1d.iloc[-1]):
-                    signals_1d.append(f"{symbol.replace('.IS','')} 🔴 Para Çıkışı")
+            g1d, c1d = money_flow(df1d)
+            if g1d is not None and len(g1d) > 0:
+                if bool(g1d.iloc[-1]):
+                    giris_1d.append(ad)
+                elif bool(c1d.iloc[-1]):
+                    cikis_1d.append(ad)
 
             basarili += 1
 
-        except Exception as e:
+        except Exception:
             hatali += 1
 
         time.sleep(0.2)
 
-    print(f"\n✅ Tamamlandı! Başarılı: {basarili} | Hatalı: {hatali}", flush=True)
-    print(f"🟢 4H Sinyal: {len(signals_4h)} | 1D Sinyal: {len(signals_1d)}", flush=True)
+    print(f"✅ Tamamlandı! Başarılı: {basarili} | Hatalı: {hatali}", flush=True)
 
-    # ================= RAPOR =================
-    report = f"💰 Para Akışı Tarama #{scan_number}\n"
-    report += f"🕒 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-    report += f"📊 Taranan: {basarili} | Hatalı: {hatali}\n\n"
+    zaman = datetime.now().strftime('%d.%m.%Y %H:%M')
 
-    if signals_4h:
-        report += f"⏱️ 4 SAATLİK ({len(signals_4h)} sinyal)\n"
-        report += "\n".join(signals_4h) + "\n\n"
+    # ===== ÖZET =====
+    send_telegram(
+        f"💰 Para Akışı — #{scan_number}\n"
+        f"🕒 {zaman}\n\n"
+        f"⏱️ 4H → 🟢 Giriş: {len(giris_4h)}  |  🔴 Çıkış: {len(cikis_4h)}\n"
+        f"📅 1D → 🟢 Giriş: {len(giris_1d)}  |  🔴 Çıkış: {len(cikis_1d)}"
+    )
+    time.sleep(0.5)
 
-    if signals_1d:
-        report += f"📅 GÜNLÜK ({len(signals_1d)} sinyal)\n"
-        report += "\n".join(signals_1d) + "\n\n"
+    # ===== 4H GİRİŞ =====
+    if giris_4h:
+        send_parcali(f"⏱️ 4H — 🟢 PARA GİRİŞİ", giris_4h)
 
-    if not signals_4h and not signals_1d:
-        report += "ℹ️ Bu taramada sinyal bulunamadı.\n\n"
+    # ===== 4H ÇIKIŞ =====
+    if cikis_4h:
+        send_parcali(f"⏱️ 4H — 🔴 PARA ÇIKIŞI", cikis_4h)
 
-    report += "⏰ Sonraki tarama 2 saat sonra..."
+    # ===== 1D GİRİŞ =====
+    if giris_1d:
+        send_parcali(f"📅 1D — 🟢 PARA GİRİŞİ", giris_1d)
 
-    send_telegram(report)
+    # ===== 1D ÇIKIŞ =====
+    if cikis_1d:
+        send_parcali(f"📅 1D — 🔴 PARA ÇIKIŞI", cikis_1d)
+
+    if not any([giris_4h, cikis_4h, giris_1d, cikis_1d]):
+        send_telegram(f"ℹ️ Tarama #{scan_number} — Sinyal bulunamadı.\n🕒 {zaman}")
 
 
 # ================= OTOMATİK DÖNGÜ =================
 if __name__ == "__main__":
     print("🚀 Para Akışı Otomatik Tarayıcı Başladı", flush=True)
-    print(f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}", flush=True)
 
     send_telegram(
         f"🤖 Para Akışı Bot Aktif\n"
         f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        f"🔄 Her 2 saatte bir tarama yapılacak\n"
-        f"📊 {len(SYMBOLS)} hisse takip ediliyor"
+        f"🔄 Her 2 saatte bir tarama yapılacak"
     )
 
     scan_count = 0
